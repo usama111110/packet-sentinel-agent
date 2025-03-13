@@ -15,7 +15,8 @@ Packet Sentinel Agent is a high-performance network packet capture tool written 
 - **BPF filtering** for targeted packet capture
 - **Reconnection logic** for reliable server communication
 - **Detailed protocol detection** for common application protocols
-- **Optional compression and encryption** (configurable)
+- **Full packet capture** - Captures and forwards complete packet data
+- **End-to-end encryption** - Secure channel using RSA key exchange and AES-256 encryption
 
 ## Requirements
 
@@ -59,8 +60,8 @@ GOOS=linux GOARCH=amd64 go build -o packet-sentinel-agent-linux
 # Enable debug output
 ./packet-sentinel-agent --server 192.168.1.100:8888 --interface eth0 --debug
 
-# Enable compression and encryption
-./packet-sentinel-agent --server 192.168.1.100:8888 --interface eth0 --compress --encrypt
+# Disable encryption (not recommended)
+./packet-sentinel-agent --server 192.168.1.100:8888 --interface eth0 --encrypt=false
 
 # Limit capture to 1000 packets
 ./packet-sentinel-agent --server 192.168.1.100:8888 --interface eth0 --limit 1000
@@ -79,6 +80,27 @@ GOOS=linux GOARCH=amd64 go build -o packet-sentinel-agent-linux
 ./packet-sentinel-agent --uninstall
 ```
 
+## Security Features
+
+The agent implements strong security measures:
+
+1. **Encryption Handshake**:
+   - Receives the server's RSA-2048 public key
+   - Generates a random AES-256 symmetric key
+   - Encrypts the symmetric key using the server's public key
+   - Establishes a secure channel for all subsequent communication
+
+2. **Packet Encryption**:
+   - All packet data is encrypted using AES-256 in CBC mode
+   - A unique IV is generated for each packet
+   - PKCS#7 padding ensures proper block alignment
+   - Message size is sent as a header for efficient transmission
+
+3. **Connection Resilience**:
+   - Automatically reconnects if the server connection is lost
+   - Re-establishes the secure channel after reconnection
+   - Maintains encryption parameters across reconnects
+
 ## Advanced Options
 
 - `--snaplen` - Maximum bytes to capture per packet (default: 1600)
@@ -87,15 +109,15 @@ GOOS=linux GOARCH=amd64 go build -o packet-sentinel-agent-linux
 - `--type` - Capture type: "live" or "file"
 - `--file` - PCAP file to read from (when type=file)
 - `--compress` - Enable compression
-- `--encrypt` - Enable encryption
+- `--encrypt` - Enable encryption (default: true)
 - `--limit` - Maximum number of packets to capture (0 = unlimited)
 
-## Notes for Production Use
+## Performance Considerations
 
-For production environments, consider the following enhancements:
+For high-volume network environments:
 
-1. **Implement proper encryption** (TLS or custom encryption)
-2. **Add authentication** between agent and server
-3. **Implement data compression** for bandwidth savings
-4. **Set up proper logging** to a file or log service
-5. **Configure firewalls** to allow agent-server communication
+1. **Increase buffer sizes** using `--snaplen` parameter
+2. **Use specific BPF filters** to reduce capture volume
+3. **Run on a dedicated machine** with sufficient CPU and memory
+4. **Use a high-performance network card** with hardware acceleration
+5. **Monitor disk space** when capturing full packet data

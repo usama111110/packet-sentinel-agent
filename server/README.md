@@ -10,6 +10,7 @@ A simple Python-based server for receiving and displaying network packet data fr
 - Logs all activity to a log file
 - Tracks connected agents and their statistics
 - Lightweight and easy to deploy
+- Secure encrypted communication using AES-256 and RSA key exchange
 
 ## Requirements
 
@@ -18,6 +19,7 @@ A simple Python-based server for receiving and displaying network packet data fr
   - socket
   - colorama
   - python-dotenv
+  - cryptography
 
 ## Running the Server
 
@@ -37,6 +39,16 @@ By default, the server listens on all interfaces (0.0.0.0) on port 8888. You can
 SERVER_HOST=127.0.0.1 SERVER_PORT=9999 python packet_sentinel_server.py
 ```
 
+## Security
+
+The server implements a secure communication channel with agents:
+
+1. RSA-2048 key exchange for initial handshake
+2. AES-256-CBC for symmetric encryption of packet data
+3. Message integrity verification
+
+This ensures that packet data transmitted from agents cannot be intercepted or read by unauthorized parties.
+
 ## Output
 
 The server displays captured packets in real-time with color coding:
@@ -50,11 +62,22 @@ All server activity is also logged to `packet_server.log`.
 
 ## Connecting Agents
 
-Agents should connect to the server's IP address and port (default: 8888). Each packet should be sent as a JSON object followed by a newline character.
+Agents automatically establish a secure connection with the server:
+1. The agent connects to the server and receives the server's public key
+2. The agent generates a random AES-256 key and encrypts it with the server's public key
+3. The agent sends the encrypted AES key to the server
+4. All subsequent communication is encrypted using the AES key
 
-## Security Considerations
+Each packet is encrypted, sent with a size header, and decrypted by the server.
 
-For production use, consider adding:
-- TLS encryption for the connections
-- Authentication for agents
-- Access control for viewing packet data
+## Performance Considerations
+
+The server is designed to handle high-volume packet capture:
+- Multithreaded design for parallel processing of agent connections
+- Efficient packet handling and storage
+- Optimized encryption/decryption operations
+
+For extremely high-volume environments, consider:
+- Running on a dedicated high-performance server
+- Increasing available memory for packet storage
+- Distributing the load across multiple server instances

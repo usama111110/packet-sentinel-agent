@@ -3,9 +3,17 @@ package main
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -29,7 +37,7 @@ var (
 	captureType   = flag.String("type", "live", "Capture type: live or file")
 	pcapFile      = flag.String("file", "", "PCAP file to read from (when type=file)")
 	compression   = flag.Bool("compress", false, "Enable compression")
-	encryption    = flag.Bool("encrypt", false, "Enable encryption")
+	encryption    = flag.Bool("encrypt", true, "Enable encryption (default: true)")
 	installFlag   = flag.Bool("install", false, "Install as a system service")
 	uninstallFlag = flag.Bool("uninstall", false, "Uninstall the system service")
 	statusFlag    = flag.Bool("status", false, "Check service status")
@@ -75,6 +83,13 @@ type Program struct {
 	config Config
 	exit   chan struct{}
 	logger service.Logger
+}
+
+// CryptoContext holds encryption-related data
+type CryptoContext struct {
+	ServerPublicKey *rsa.PublicKey
+	SymmetricKey    []byte
+	Ready           bool
 }
 
 // Start is called when the service starts
@@ -224,6 +239,17 @@ func (p *Program) run() {
 	defer conn.Close()
 	logMessage(p.logger, fmt.Sprintf("Connected to server: %s", p.config.ServerAddr))
 
+	// Set up encryption if enabled
+	var cryptoCtx CryptoContext
+	if p.config.Encryption {
+		cryptoCtx, err = performHandshake(conn)
+		if err != nil {
+			logMessage(p.logger, fmt.Sprintf("Failed to establish secure channel: %v", err))
+			return
+		}
+		logMessage(p.logger, "Secure channel established with server")
+	}
+
 	// Create a packet source
 	var packetSource *gopacket.PacketSource
 	var handle *pcap.Handle
@@ -333,18 +359,18 @@ func (p *Program) run() {
 				// This is where you would compress the data with zlib, gzip, etc.
 			}
 			
-			// Apply encryption if enabled
-			if p.config.Encryption {
-				// Simple encryption placeholder - in production, use a proper encryption library
-				// This is where you would encrypt the data with AES, etc.
+			// Apply encryption if enabled and send
+			var sendErr error
+			if p.config.Encryption && cryptoCtx.Ready {
+				sendErr = sendEncrypted(conn, data, cryptoCtx)
+			} else {
+				// If encryption is disabled or not ready, send with newline delimiter (legacy mode)
+				data = append(data, '\n')
+				_, sendErr = conn.Write(data)
 			}
 			
-			// Add newline as message delimiter
-			data = append(data, '\n')
-			
-			_, err = conn.Write(data)
-			if err != nil {
-				logMessage(p.logger, fmt.Sprintf("Error sending packet to server: %v", err))
+			if sendErr != nil {
+				logMessage(p.logger, fmt.Sprintf("Error sending packet to server: %v", sendErr))
 				
 				// Try to reconnect
 				conn.Close()
@@ -354,10 +380,136 @@ func (p *Program) run() {
 					time.Sleep(5 * time.Second)
 				} else {
 					logMessage(p.logger, "Reconnected to server")
+					
+					// Re-establish encryption if needed
+					if p.config.Encryption {
+						cryptoCtx, err = performHandshake(conn)
+						if err != nil {
+							logMessage(p.logger, fmt.Sprintf("Failed to re-establish secure channel: %v", err))
+							return
+						}
+						logMessage(p.logger, "Secure channel re-established with server")
+					}
 				}
 			}
 		}
 	}
+}
+
+// performHandshake establishes a secure channel with the server
+func performHandshake(conn net.Conn) (CryptoContext, error) {
+	var ctx CryptoContext
+	
+	// Read server's public key
+	pemData := make([]byte, 4096)
+	n, err := conn.Read(pemData)
+	if err != nil {
+		return ctx, fmt.Errorf("failed to read server public key: %v", err)
+	}
+	
+	// Parse the public key
+	block, _ := pem.Decode(pemData[:n])
+	if block == nil || block.Type != "PUBLIC KEY" {
+		return ctx, fmt.Errorf("failed to decode PEM block containing public key")
+	}
+	
+	pubInterface, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return ctx, fmt.Errorf("failed to parse public key: %v", err)
+	}
+	
+	var ok bool
+	ctx.ServerPublicKey, ok = pubInterface.(*rsa.PublicKey)
+	if !ok {
+		return ctx, fmt.Errorf("not an RSA public key")
+	}
+	
+	// Generate a random symmetric key (AES-256)
+	ctx.SymmetricKey = make([]byte, 32) // 256 bits
+	if _, err := io.ReadFull(rand.Reader, ctx.SymmetricKey); err != nil {
+		return ctx, fmt.Errorf("failed to generate symmetric key: %v", err)
+	}
+	
+	// Encrypt the symmetric key with the server's public key
+	encryptedKey, err := rsa.EncryptOAEP(
+		sha256.New(),
+		rand.Reader,
+		ctx.ServerPublicKey,
+		ctx.SymmetricKey,
+		nil,
+	)
+	if err != nil {
+		return ctx, fmt.Errorf("failed to encrypt symmetric key: %v", err)
+	}
+	
+	// Send the encrypted key to the server
+	_, err = conn.Write(encryptedKey)
+	if err != nil {
+		return ctx, fmt.Errorf("failed to send encrypted key: %v", err)
+	}
+	
+	// Wait for confirmation
+	confirmation := make([]byte, 26) // "SECURE_CHANNEL_ESTABLISHED"
+	n, err = conn.Read(confirmation)
+	if err != nil || string(confirmation[:n]) != "SECURE_CHANNEL_ESTABLISHED" {
+		return ctx, fmt.Errorf("failed to receive confirmation: %v", err)
+	}
+	
+	ctx.Ready = true
+	return ctx, nil
+}
+
+// sendEncrypted encrypts and sends a message using the established secure channel
+func sendEncrypted(conn net.Conn, data []byte, ctx CryptoContext) error {
+	// Create padded data (PKCS#7 padding)
+	blockSize := aes.BlockSize
+	padding := blockSize - (len(data) % blockSize)
+	paddedData := make([]byte, len(data)+padding)
+	copy(paddedData, data)
+	for i := len(data); i < len(paddedData); i++ {
+		paddedData[i] = byte(padding)
+	}
+	
+	// Generate random IV
+	iv := make([]byte, aes.BlockSize)
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return fmt.Errorf("failed to generate IV: %v", err)
+	}
+	
+	// Create AES cipher
+	block, err := aes.NewCipher(ctx.SymmetricKey)
+	if err != nil {
+		return fmt.Errorf("failed to create cipher: %v", err)
+	}
+	
+	// Create encryptor
+	mode := cipher.NewCBCEncrypter(block, iv)
+	ciphertext := make([]byte, len(paddedData))
+	mode.CryptBlocks(ciphertext, paddedData)
+	
+	// Prepend IV to the ciphertext
+	encrypted := append(iv, ciphertext...)
+	
+	// Calculate and send message size
+	messageSize := len(encrypted)
+	sizeBuf := make([]byte, 4)
+	sizeBuf[0] = byte(messageSize >> 24)
+	sizeBuf[1] = byte(messageSize >> 16)
+	sizeBuf[2] = byte(messageSize >> 8)
+	sizeBuf[3] = byte(messageSize)
+	
+	_, err = conn.Write(sizeBuf)
+	if err != nil {
+		return fmt.Errorf("failed to send message size: %v", err)
+	}
+	
+	// Send encrypted data
+	_, err = conn.Write(encrypted)
+	if err != nil {
+		return fmt.Errorf("failed to send encrypted data: %v", err)
+	}
+	
+	return nil
 }
 
 // processPacket converts a gopacket.Packet to our Packet struct
@@ -366,6 +518,7 @@ func processPacket(packet gopacket.Packet) Packet {
 		Timestamp: packet.Metadata().Timestamp,
 		Length:    packet.Metadata().Length,
 		Hostname:  "unknown",  // Will be set in run()
+		Data:      packet.Data(), // Include full packet data
 	}
 
 	// Extract network layer info
@@ -389,28 +542,24 @@ func processPacket(packet gopacket.Packet) Packet {
 
 	// Extract application layer info
 	if appLayer := packet.ApplicationLayer(); appLayer != nil {
-		data := appLayer.Payload()
-		if len(data) > 100 {
-			data = data[:100] // Truncate long payloads
-		}
-		p.Data = data
+		appData := appLayer.Payload()
 		
 		// Try to determine the application protocol
-		if bytes.Contains(data, []byte("HTTP")) {
+		if bytes.Contains(appData, []byte("HTTP")) {
 			p.Protocol = "HTTP"
 			// Extract first line of HTTP request/response
-			if i := bytes.IndexByte(data, '\n'); i > 0 {
-				p.Info = string(data[:i])
+			if i := bytes.IndexByte(appData, '\n'); i > 0 {
+				p.Info = string(appData[:i])
 			}
-		} else if bytes.Contains(data, []byte("SSH")) {
+		} else if bytes.Contains(appData, []byte("SSH")) {
 			p.Protocol = "SSH"
-		} else if len(data) > 2 && data[0] == 0x16 && data[1] == 0x03 {
+		} else if len(appData) > 2 && appData[0] == 0x16 && appData[1] == 0x03 {
 			p.Protocol = "TLS"
-		} else if bytes.Contains(data, []byte("DNS")) {
+		} else if bytes.Contains(appData, []byte("DNS")) {
 			p.Protocol = "DNS"
-		} else if bytes.Contains(data, []byte("SMTP")) {
+		} else if bytes.Contains(appData, []byte("SMTP")) {
 			p.Protocol = "SMTP"
-		} else if bytes.Contains(data, []byte("FTP")) {
+		} else if bytes.Contains(appData, []byte("FTP")) {
 			p.Protocol = "FTP"
 		}
 	}

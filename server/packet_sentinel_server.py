@@ -5,8 +5,13 @@ import threading
 import time
 import os
 import logging
+import base64
 from datetime import datetime
 from colorama import Fore, Style, init
+from cryptography.hazmat.primitives.asymmetric import rsa, padding
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+from cryptography.hazmat.backends import default_backend
 
 # Initialize colorama
 init()
@@ -28,6 +33,20 @@ class PacketServer:
         self.packets = []  # Store received packets
         self.running = False
         self.max_packets = 10000  # Maximum packets to keep in memory
+        
+        # Generate encryption keys
+        self.private_key = rsa.generate_private_key(
+            public_exponent=65537,
+            key_size=2048,
+            backend=default_backend()
+        )
+        self.public_key = self.private_key.public_key()
+        
+        # Serialize public key for sharing with clients
+        self.public_key_pem = self.public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo
+        )
 
     def start(self):
         """Start the packet server"""
@@ -62,7 +81,8 @@ class PacketServer:
                         'connected_time': time.time(),
                         'packets_received': 0,
                         'hostname': 'unknown',
-                        'buffer': ''
+                        'buffer': '',
+                        'symmetric_key': None  # Will be set during handshake
                     }
                     
                     # Start a thread to handle this client
@@ -85,22 +105,116 @@ class PacketServer:
         finally:
             self.shutdown()
 
+    def perform_handshake(self, client_socket, client_id):
+        """Perform encryption handshake with client"""
+        try:
+            # First, send public key to client
+            client_socket.sendall(self.public_key_pem)
+            
+            # Wait for encrypted symmetric key from client
+            encrypted_key_data = client_socket.recv(512)  # RSA-2048 encrypted data
+            
+            if not encrypted_key_data:
+                raise Exception("No encryption key received from client")
+                
+            # Decrypt symmetric key using private key
+            symmetric_key = self.private_key.decrypt(
+                encrypted_key_data,
+                padding.OAEP(
+                    mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                    algorithm=hashes.SHA256(),
+                    label=None
+                )
+            )
+            
+            # Store symmetric key for this client
+            self.clients[client_id]['symmetric_key'] = symmetric_key
+            
+            print(f"{Fore.GREEN}[+] Established secure channel with {client_id}{Style.RESET_ALL}")
+            logger.info(f"Established secure channel with {client_id}")
+            
+            # Send confirmation
+            client_socket.sendall(b"SECURE_CHANNEL_ESTABLISHED")
+            
+            return True
+            
+        except Exception as e:
+            print(f"{Fore.RED}[!] Handshake failed with {client_id}: {e}{Style.RESET_ALL}")
+            logger.error(f"Handshake failed with {client_id}: {e}")
+            return False
+
+    def decrypt_message(self, encrypted_data, client_id):
+        """Decrypt message using client's symmetric key"""
+        try:
+            if not self.clients[client_id]['symmetric_key']:
+                raise Exception("No symmetric key available for client")
+                
+            # Extract IV and ciphertext
+            iv = encrypted_data[:16]
+            ciphertext = encrypted_data[16:]
+            
+            # Create decryptor
+            cipher = Cipher(
+                algorithms.AES(self.clients[client_id]['symmetric_key']),
+                modes.CBC(iv),
+                backend=default_backend()
+            )
+            decryptor = cipher.decryptor()
+            
+            # Decrypt and unpad
+            padded_data = decryptor.update(ciphertext) + decryptor.finalize()
+            
+            # PKCS7 unpadding
+            padding_value = padded_data[-1]
+            if padding_value > 16:
+                raise ValueError("Invalid padding")
+            for i in range(1, padding_value + 1):
+                if padded_data[-i] != padding_value:
+                    raise ValueError("Invalid padding")
+                    
+            plaintext = padded_data[:-padding_value]
+            return plaintext.decode('utf-8', errors='ignore')
+            
+        except Exception as e:
+            print(f"{Fore.RED}[!] Decryption error for {client_id}: {e}{Style.RESET_ALL}")
+            logger.error(f"Decryption error for {client_id}: {e}")
+            return None
+
     def handle_client(self, client_socket, client_id):
         """Handle communication with a client"""
         try:
-            buffer = ""
+            # First, perform encryption handshake
+            if not self.perform_handshake(client_socket, client_id):
+                raise Exception("Failed to establish secure channel")
+                
+            buffer = b""
+            message_size = -1
+            
             while self.running:
+                # First, read message size (4 bytes)
+                if message_size == -1:
+                    size_data = client_socket.recv(4)
+                    if not size_data or len(size_data) != 4:
+                        break
+                    message_size = int.from_bytes(size_data, byteorder='big')
+                
+                # Read the encrypted message
                 data = client_socket.recv(4096)
                 if not data:
                     break
                 
-                # Add data to buffer and process complete messages
-                buffer += data.decode('utf-8', errors='ignore')
+                buffer += data
                 
-                # Process complete messages that end with newline
-                while '\n' in buffer:
-                    message, buffer = buffer.split('\n', 1)
-                    self.process_packet(message, client_id)
+                # Check if we have received the complete message
+                if len(buffer) >= message_size:
+                    encrypted_message = buffer[:message_size]
+                    buffer = buffer[message_size:]
+                    message_size = -1  # Reset for next message
+                    
+                    # Decrypt the message
+                    decrypted_message = self.decrypt_message(encrypted_message, client_id)
+                    if decrypted_message:
+                        self.process_packet(decrypted_message, client_id)
                 
         except Exception as e:
             print(f"{Fore.YELLOW}[!] Error handling client {client_id}: {e}{Style.RESET_ALL}")

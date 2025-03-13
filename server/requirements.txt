@@ -2,3 +2,5 @@
 socket
 colorama
 python-dotenv
+cryptography
+
