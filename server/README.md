@@ -1,81 +1,60 @@
 
-# Packet Sentinel - Server Dashboard
+# Packet Sentinel - Server
 
-## Overview
+A simple Python-based server for receiving and displaying network packet data from Packet Sentinel agents.
 
-This folder contains the source code for the Packet Sentinel Server, which receives packet data from multiple agents and provides a dashboard UI to monitor and analyze network traffic in real-time.
+## Features
 
-## Technical Stack
+- Receives packet data from multiple agents
+- Displays packet information in real-time with color coding
+- Logs all activity to a log file
+- Tracks connected agents and their statistics
+- Lightweight and easy to deploy
 
-- **Frontend**: React with TypeScript
-- **Styling**: Tailwind CSS
-- **UI Components**: ShadCN UI
-- **Visualization**: Recharts for traffic graphs and analytics
-- **Server**: Node.js with Express
-- **Real-time Communication**: Socket.IO
+## Requirements
 
-## Server Setup
+- Python 3.6 or later
+- Required Python packages (install with `pip install -r requirements.txt`):
+  - socket
+  - colorama
+  - python-dotenv
 
-### Prerequisites
+## Running the Server
 
-1. Node.js 18 or later
-2. npm or yarn package manager
+1. Install the required packages:
+```bash
+pip install -r requirements.txt
+```
 
-### Installation
+2. Run the server:
+```bash
+python packet_sentinel_server.py
+```
+
+By default, the server listens on all interfaces (0.0.0.0) on port 8888. You can change these settings using environment variables:
 
 ```bash
-cd server
-npm install
+SERVER_HOST=127.0.0.1 SERVER_PORT=9999 python packet_sentinel_server.py
 ```
 
-### Running the Server
+## Output
 
-```bash
-# Development mode
-npm run dev
+The server displays captured packets in real-time with color coding:
+- Blue: TCP packets
+- Green: UDP packets
+- Cyan: HTTP packets
+- Magenta: HTTPS packets
+- Yellow: DNS packets
 
-# Production mode
-npm run build
-npm start
-```
+All server activity is also logged to `packet_server.log`.
 
-By default, the server listens on port 8888. This can be changed using the `PORT` environment variable:
+## Connecting Agents
 
-```bash
-PORT=9000 npm start
-```
-
-## Accessing the Dashboard
-
-Once the server is running, you can access the dashboard at:
-
-```
-http://localhost:8888
-```
-
-## Server Configuration
-
-The server can be configured using environment variables or a `.env` file:
-
-- `PORT`: Server listening port (default: 8888)
-- `TLS_CERT`: Path to TLS certificate for HTTPS (optional)
-- `TLS_KEY`: Path to TLS private key for HTTPS (optional)
-- `DB_PATH`: Path to store packet capture database (default: ./data)
-- `LOG_LEVEL`: Logging level (default: info)
+Agents should connect to the server's IP address and port (default: 8888). Each packet should be sent as a JSON object followed by a newline character.
 
 ## Security Considerations
 
-For production deployments:
-
-1. Enable HTTPS by providing TLS certificates
-2. Set up proper authentication for the dashboard
-3. Configure firewall rules to restrict access to the server port
-4. Consider deploying behind a reverse proxy like Nginx
-
-## Packet Storage and Retention
-
-By default, captured packets are stored in-memory with a retention period of 24 hours. For longer retention or persistent storage:
-
-1. Enable the database storage option in the configuration
-2. Adjust retention policies as needed
-3. Consider using a dedicated database for high-volume environments
+For production use, consider adding:
+- TLS encryption for the connections
+- Authentication for agents
+- Access control for viewing packet data

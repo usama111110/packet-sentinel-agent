@@ -3,112 +3,99 @@
 
 ## Overview
 
-This folder contains the source code for the Packet Sentinel Agent, a cross-platform network packet capture tool that can be compiled into a standalone executable for Windows, macOS, and Linux.
+Packet Sentinel Agent is a high-performance network packet capture tool written in Go. It can be compiled into a standalone executable for Windows, macOS, and Linux, with support for running as a system service that automatically starts at boot.
 
-## Technical Stack
+## Features
 
-- **Language**: Go (Golang)
-- **Network Capture**: libpcap/gopacket
-- **Packaging**: goreleaser for cross-platform executables
-- **Service Management**: Native support for systemd (Linux), launchd (macOS), and Windows Services
+- **Cross-platform** - Works on Windows, macOS, and Linux
+- **High-performance** packet capture using native libraries
+- **Service installation** - Can run as a system service with autostart capability
+- **Live capture** from network interfaces
+- **PCAP file reading** for offline analysis
+- **BPF filtering** for targeted packet capture
+- **Reconnection logic** for reliable server communication
+- **Detailed protocol detection** for common application protocols
+- **Optional compression and encryption** (configurable)
 
-## Building the Agent
+## Requirements
 
-### Prerequisites
+- **Go 1.20 or later** for building
+- **Platform-specific packet capture libraries:**
+  - **Linux/macOS**: libpcap (`apt-get install libpcap-dev` or `brew install libpcap`)
+  - **Windows**: Npcap or WinPcap (install from [npcap.com](https://npcap.com) or [winpcap.org](https://www.winpcap.org))
 
-1. Install Go 1.20 or later
-2. Install libpcap development libraries:
-   - Ubuntu/Debian: `sudo apt-get install libpcap-dev`
-   - macOS: `brew install libpcap`
-   - Windows: Install WinPcap or Npcap development kit
-
-### Build Commands
+## Building
 
 ```bash
-# Build for the current platform
 cd agent
-go build -o bin/packet-sentinel-agent
-
-# Cross-compile for all platforms (requires goreleaser)
-goreleaser build --snapshot --clean
+go build -o packet-sentinel-agent
 ```
 
-## Running the Agent
-
-The agent can be run directly from the command line:
+For cross-platform builds:
 
 ```bash
-./packet-sentinel-agent --server 192.168.1.100:8888
+# Windows
+GOOS=windows GOARCH=amd64 go build -o packet-sentinel-agent.exe
+
+# macOS
+GOOS=darwin GOARCH=amd64 go build -o packet-sentinel-agent-mac
+
+# Linux
+GOOS=linux GOARCH=amd64 go build -o packet-sentinel-agent-linux
 ```
 
-### Command Line Options
+## Usage
 
-- `--server`: Server address and port (required)
-- `--interface`: Network interface to capture (optional, will list available interfaces if not specified)
-- `--filter`: BPF filter expression (optional)
-- `--install`: Install as a system service
-- `--uninstall`: Uninstall the system service
-- `--status`: Check the status of the system service
+```bash
+# Basic usage - capture and forward packets
+./packet-sentinel-agent --server 192.168.1.100:8888 --interface eth0
+
+# Apply a BPF filter (only capture TCP packets)
+./packet-sentinel-agent --server 192.168.1.100:8888 --interface eth0 --filter "tcp"
+
+# Read packets from a PCAP file
+./packet-sentinel-agent --server 192.168.1.100:8888 --type file --file capture.pcap
+
+# Enable debug output
+./packet-sentinel-agent --server 192.168.1.100:8888 --interface eth0 --debug
+
+# Enable compression and encryption
+./packet-sentinel-agent --server 192.168.1.100:8888 --interface eth0 --compress --encrypt
+
+# Limit capture to 1000 packets
+./packet-sentinel-agent --server 192.168.1.100:8888 --interface eth0 --limit 1000
+```
 
 ## Installing as a Service
 
-### Linux (systemd)
-
 ```bash
-sudo ./packet-sentinel-agent --install --server 192.168.1.100:8888
+# Install as a service (Windows, macOS, or Linux)
+./packet-sentinel-agent --server 192.168.1.100:8888 --interface eth0 --install
+
+# Check service status
+./packet-sentinel-agent --status
+
+# Uninstall service
+./packet-sentinel-agent --uninstall
 ```
 
-### macOS (launchd)
+## Advanced Options
 
-```bash
-./packet-sentinel-agent --install --server 192.168.1.100:8888
-```
+- `--snaplen` - Maximum bytes to capture per packet (default: 1600)
+- `--promisc` - Set promiscuous mode (default: true)
+- `--filter` - BPF filter expression (examples: "tcp", "port 80", "host 192.168.1.1")
+- `--type` - Capture type: "live" or "file"
+- `--file` - PCAP file to read from (when type=file)
+- `--compress` - Enable compression
+- `--encrypt` - Enable encryption
+- `--limit` - Maximum number of packets to capture (0 = unlimited)
 
-### Windows
+## Notes for Production Use
 
-```bash
-packet-sentinel-agent.exe --install --server 192.168.1.100:8888
-```
+For production environments, consider the following enhancements:
 
-## Service Management
-
-### Linux
-
-```bash
-# Start the service
-sudo systemctl start packet-sentinel-agent
-
-# Stop the service
-sudo systemctl stop packet-sentinel-agent
-
-# Enable autostart
-sudo systemctl enable packet-sentinel-agent
-```
-
-### macOS
-
-```bash
-# Start the service
-launchctl load ~/Library/LaunchAgents/dev.lovable.packet-sentinel-agent.plist
-
-# Stop the service
-launchctl unload ~/Library/LaunchAgents/dev.lovable.packet-sentinel-agent.plist
-```
-
-### Windows
-
-```bash
-# Start the service
-sc start PacketSentinelAgent
-
-# Stop the service
-sc stop PacketSentinelAgent
-```
-
-## Security Considerations
-
-Running the agent requires administrative/root privileges to capture network packets. Make sure to:
-
-1. Restrict access to the agent executable
-2. Use TLS for communication with the server
-3. Implement proper authentication if deployed in production
+1. **Implement proper encryption** (TLS or custom encryption)
+2. **Add authentication** between agent and server
+3. **Implement data compression** for bandwidth savings
+4. **Set up proper logging** to a file or log service
+5. **Configure firewalls** to allow agent-server communication

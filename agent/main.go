@@ -23,9 +23,17 @@ var (
 	serverAddr    = flag.String("server", "", "Server address (required, format: host:port)")
 	interfaceName = flag.String("interface", "", "Interface to capture packets from")
 	bpfFilter     = flag.String("filter", "", "BPF filter expression")
+	captureLimit  = flag.Int("limit", 0, "Maximum number of packets to capture (0 = unlimited)")
+	snapLen       = flag.Int("snaplen", 1600, "Maximum bytes to capture per packet")
+	promisc       = flag.Bool("promisc", true, "Set promiscuous mode")
+	captureType   = flag.String("type", "live", "Capture type: live or file")
+	pcapFile      = flag.String("file", "", "PCAP file to read from (when type=file)")
+	compression   = flag.Bool("compress", false, "Enable compression")
+	encryption    = flag.Bool("encrypt", false, "Enable encryption")
 	installFlag   = flag.Bool("install", false, "Install as a system service")
 	uninstallFlag = flag.Bool("uninstall", false, "Uninstall the system service")
 	statusFlag    = flag.Bool("status", false, "Check service status")
+	debugFlag     = flag.Bool("debug", false, "Enable debug logging")
 )
 
 // Packet represents a captured network packet
@@ -37,6 +45,7 @@ type Packet struct {
 	Length      int       `json:"length"`
 	Info        string    `json:"info"`
 	Data        []byte    `json:"data,omitempty"`
+	Hostname    string    `json:"hostname"`
 }
 
 // Interface represents a network interface
@@ -51,17 +60,27 @@ type Config struct {
 	ServerAddr    string
 	InterfaceName string
 	BPFFilter     string
+	CaptureLimit  int
+	SnapLen       int
+	Promisc       bool
+	CaptureType   string
+	PCAPFile      string
+	Compression   bool
+	Encryption    bool
+	Debug         bool
 }
 
 // Program implements service.Program interface
 type Program struct {
 	config Config
 	exit   chan struct{}
+	logger service.Logger
 }
 
 // Start is called when the service starts
 func (p *Program) Start(s service.Service) error {
 	p.exit = make(chan struct{})
+	p.logger = s.Logger
 	go p.run()
 	return nil
 }
@@ -88,6 +107,14 @@ func main() {
 		ServerAddr:    *serverAddr,
 		InterfaceName: *interfaceName,
 		BPFFilter:     *bpfFilter,
+		CaptureLimit:  *captureLimit,
+		SnapLen:       *snapLen,
+		Promisc:       *promisc,
+		CaptureType:   *captureType,
+		PCAPFile:      *pcapFile,
+		Compression:   *compression,
+		Encryption:    *encryption,
+		Debug:         *debugFlag,
 	}
 
 	prg := &Program{config: config}
@@ -146,77 +173,170 @@ func (p *Program) run() {
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
 	// Print application info
-	fmt.Println("Packet Sentinel Agent")
-	fmt.Println("---------------------")
-	fmt.Printf("Target server: %s\n", p.config.ServerAddr)
+	logMessage(p.logger, "Packet Sentinel Agent starting")
+	logMessage(p.logger, fmt.Sprintf("Target server: %s", p.config.ServerAddr))
+
+	// Get hostname for packet identification
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown-host"
+		logMessage(p.logger, fmt.Sprintf("Warning: Could not determine hostname: %v", err))
+	}
 
 	// List interfaces if none specified
-	if p.config.InterfaceName == "" {
-		fmt.Println("Available interfaces:")
+	if p.config.InterfaceName == "" && p.config.CaptureType != "file" {
+		logMessage(p.logger, "Available interfaces:")
 		interfaces, err := findDevices()
 		if err != nil {
-			log.Fatal("Failed to list interfaces: ", err)
+			logMessage(p.logger, fmt.Sprintf("Failed to list interfaces: %v", err))
+			return
 		}
 		for i, iface := range interfaces {
-			fmt.Printf("[%d] %s - %s\n", i+1, iface.Name, iface.Description)
+			logMessage(p.logger, fmt.Sprintf("[%d] %s - %s", i+1, iface.Name, iface.Description))
 		}
-		log.Fatal("Please specify an interface with --interface flag")
+		logMessage(p.logger, "Please specify an interface with --interface flag")
+		return
+	}
+
+	// Validate capture type
+	if p.config.CaptureType == "file" && p.config.PCAPFile == "" {
+		logMessage(p.logger, "PCAP file path is required when using --type=file")
+		return
 	}
 
 	// Start packet capture
-	fmt.Printf("Starting capture on interface: %s\n", p.config.InterfaceName)
+	if p.config.CaptureType == "file" {
+		logMessage(p.logger, fmt.Sprintf("Reading from PCAP file: %s", p.config.PCAPFile))
+	} else {
+		logMessage(p.logger, fmt.Sprintf("Starting capture on interface: %s", p.config.InterfaceName))
+	}
+	
 	if p.config.BPFFilter != "" {
-		fmt.Printf("Using filter: %s\n", p.config.BPFFilter)
+		logMessage(p.logger, fmt.Sprintf("Using filter: %s", p.config.BPFFilter))
 	}
 
 	// Connect to server
 	conn, err := net.Dial("tcp", p.config.ServerAddr)
 	if err != nil {
-		log.Fatal("Failed to connect to server: ", err)
+		logMessage(p.logger, fmt.Sprintf("Failed to connect to server: %v", err))
+		return
 	}
 	defer conn.Close()
-	fmt.Printf("Connected to server: %s\n", p.config.ServerAddr)
+	logMessage(p.logger, fmt.Sprintf("Connected to server: %s", p.config.ServerAddr))
 
-	// Create a packet capture handle
-	handle, err := pcap.OpenLive(p.config.InterfaceName, 1600, true, pcap.BlockForever)
-	if err != nil {
-		log.Fatal("Failed to open interface: ", err)
+	// Create a packet source
+	var packetSource *gopacket.PacketSource
+	var handle *pcap.Handle
+
+	if p.config.CaptureType == "file" {
+		// Open PCAP file
+		handle, err = pcap.OpenOffline(p.config.PCAPFile)
+		if err != nil {
+			logMessage(p.logger, fmt.Sprintf("Failed to open PCAP file: %v", err))
+			return
+		}
+	} else {
+		// Open live capture
+		handle, err = pcap.OpenLive(
+			p.config.InterfaceName,
+			int32(p.config.SnapLen),
+			p.config.Promisc,
+			pcap.BlockForever,
+		)
+		if err != nil {
+			logMessage(p.logger, fmt.Sprintf("Failed to open interface: %v", err))
+			return
+		}
 	}
 	defer handle.Close()
 
 	// Set filter if provided
 	if p.config.BPFFilter != "" {
 		if err := handle.SetBPFFilter(p.config.BPFFilter); err != nil {
-			log.Fatal("Failed to set BPF filter: ", err)
+			logMessage(p.logger, fmt.Sprintf("Failed to set BPF filter: %v", err))
+			return
 		}
 	}
 
-	// Start packet processing
-	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
+	// Create packet source
+	packetSource = gopacket.NewPacketSource(handle, handle.LinkType())
 	packetChan := packetSource.Packets()
+
+	// Track packet statistics
+	packetsProcessed := 0
+	startTime := time.Now()
+	lastReportTime := startTime
+	
+	// Start a goroutine to report statistics
+	if p.config.Debug {
+		go func() {
+			ticker := time.NewTicker(10 * time.Second)
+			defer ticker.Stop()
+			
+			for {
+				select {
+				case <-p.exit:
+					return
+				case <-ticker.C:
+					duration := time.Since(startTime)
+					rate := float64(packetsProcessed) / duration.Seconds()
+					logMessage(p.logger, fmt.Sprintf("Stats: Captured %d packets (%.2f packets/sec)", 
+						packetsProcessed, rate))
+				}
+			}
+		}()
+	}
 
 	// Main loop
 	for {
 		select {
 		case <-p.exit:
-			fmt.Println("Agent stopping...")
+			logMessage(p.logger, "Agent stopping...")
 			return
 		case <-sigs:
-			fmt.Println("Received signal, stopping...")
+			logMessage(p.logger, "Received signal, stopping...")
 			return
-		case packet := <-packetChan:
-			if packet == nil {
+		case packet, ok := <-packetChan:
+			if !ok {
+				if p.config.CaptureType == "file" {
+					logMessage(p.logger, "Finished reading PCAP file")
+					return
+				}
 				continue
 			}
 			
 			// Process the packet
 			p := processPacket(packet)
 			
+			// Add hostname
+			p.Hostname = hostname
+			
+			// Update packet counter
+			packetsProcessed++
+			
+			// Check if we've reached the limit
+			if p.config.CaptureLimit > 0 && packetsProcessed >= p.config.CaptureLimit {
+				logMessage(p.logger, fmt.Sprintf("Reached packet limit of %d, stopping", p.config.CaptureLimit))
+				return
+			}
+			
 			// Serialize and send to server
 			data, err := json.Marshal(p)
 			if err != nil {
-				log.Printf("Error marshaling packet: %v", err)
+				logMessage(p.logger, fmt.Sprintf("Error marshaling packet: %v", err))
 				continue
+			}
+			
+			// Apply compression if enabled
+			if p.config.Compression {
+				// Simple compression placeholder - in production, use a proper compression library
+				// This is where you would compress the data with zlib, gzip, etc.
+			}
+			
+			// Apply encryption if enabled
+			if p.config.Encryption {
+				// Simple encryption placeholder - in production, use a proper encryption library
+				// This is where you would encrypt the data with AES, etc.
 			}
 			
 			// Add newline as message delimiter
@@ -224,16 +344,16 @@ func (p *Program) run() {
 			
 			_, err = conn.Write(data)
 			if err != nil {
-				log.Printf("Error sending packet to server: %v", err)
+				logMessage(p.logger, fmt.Sprintf("Error sending packet to server: %v", err))
 				
 				// Try to reconnect
 				conn.Close()
 				conn, err = net.Dial("tcp", p.config.ServerAddr)
 				if err != nil {
-					log.Printf("Failed to reconnect to server: %v", err)
+					logMessage(p.logger, fmt.Sprintf("Failed to reconnect to server: %v", err))
 					time.Sleep(5 * time.Second)
 				} else {
-					log.Println("Reconnected to server")
+					logMessage(p.logger, "Reconnected to server")
 				}
 			}
 		}
@@ -245,6 +365,7 @@ func processPacket(packet gopacket.Packet) Packet {
 	p := Packet{
 		Timestamp: packet.Metadata().Timestamp,
 		Length:    packet.Metadata().Length,
+		Hostname:  "unknown",  // Will be set in run()
 	}
 
 	// Extract network layer info
@@ -285,6 +406,12 @@ func processPacket(packet gopacket.Packet) Packet {
 			p.Protocol = "SSH"
 		} else if len(data) > 2 && data[0] == 0x16 && data[1] == 0x03 {
 			p.Protocol = "TLS"
+		} else if bytes.Contains(data, []byte("DNS")) {
+			p.Protocol = "DNS"
+		} else if bytes.Contains(data, []byte("SMTP")) {
+			p.Protocol = "SMTP"
+		} else if bytes.Contains(data, []byte("FTP")) {
+			p.Protocol = "FTP"
 		}
 	}
 	
@@ -346,4 +473,12 @@ func serviceStatusString(status service.Status) string {
 	default:
 		return "Unknown"
 	}
+}
+
+// logMessage logs a message to the service logger and stdout
+func logMessage(logger service.Logger, message string) {
+	if logger != nil {
+		logger.Info(message)
+	}
+	fmt.Println(message)
 }
