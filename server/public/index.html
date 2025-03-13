@@ -1,0 +1,423 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Packet Sentinel - Network Monitoring Server</title>
+  <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+  <script src="/socket.io/socket.io.js"></script>
+  <style>
+    body {
+      background-color: #0f172a;
+      color: #e2e8f0;
+    }
+    .cyber-dark {
+      background-color: #111827;
+      border-color: #1f2937;
+    }
+    .status-indicator {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      display: inline-block;
+      margin-right: 8px;
+    }
+    .status-active {
+      background-color: #10B981;
+      animation: pulse-glow 2s infinite;
+    }
+    .status-inactive {
+      background-color: #64748B;
+    }
+    @keyframes pulse-glow {
+      0% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+      70% { box-shadow: 0 0 0 10px rgba(16, 185, 129, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+    }
+    .mono-text {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="min-h-screen flex flex-col">
+    <header class="cyber-dark border-b border-gray-700 p-4">
+      <div class="container mx-auto flex justify-between items-center">
+        <div class="flex items-center space-x-2">
+          <div class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center">
+            <div class="w-4 h-4 rounded-full bg-blue-300"></div>
+          </div>
+          <h1 class="text-xl font-bold">Packet Sentinel Server</h1>
+        </div>
+        <div class="text-sm text-gray-400">
+          <span id="serverStatus" class="flex items-center">
+            <span class="status-indicator status-active"></span>
+            Server Active
+          </span>
+        </div>
+      </div>
+    </header>
+    
+    <main class="flex-1 container mx-auto py-6 px-4">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+        <!-- Server Stats -->
+        <div class="cyber-dark rounded-lg p-4 md:col-span-2 shadow-lg">
+          <h2 class="text-lg font-medium mb-2">Server Status</h2>
+          <div class="grid grid-cols-3 gap-4">
+            <div class="bg-gray-800 p-3 rounded">
+              <div class="text-gray-400 text-sm">Uptime</div>
+              <div id="uptime" class="text-xl font-medium">00:00:00</div>
+            </div>
+            <div class="bg-gray-800 p-3 rounded">
+              <div class="text-gray-400 text-sm">Packets Received</div>
+              <div id="packetCount" class="text-xl font-medium">0</div>
+            </div>
+            <div class="bg-gray-800 p-3 rounded">
+              <div class="text-gray-400 text-sm">Connected Agents</div>
+              <div id="agentCount" class="text-xl font-medium">0</div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Connected Agents -->
+        <div class="cyber-dark rounded-lg p-4 shadow-lg">
+          <h2 class="text-lg font-medium mb-2">Connected Agents</h2>
+          <div id="agentList" class="space-y-2 overflow-y-auto max-h-32">
+            <div class="text-gray-400 text-sm italic">No agents connected</div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Packet Table -->
+      <div class="cyber-dark rounded-lg p-4 shadow-lg mb-4">
+        <div class="flex justify-between items-center mb-4">
+          <h2 class="text-lg font-medium">Received Packets</h2>
+          <div class="flex space-x-2">
+            <input 
+              id="filterInput" 
+              type="text" 
+              placeholder="Filter packets..." 
+              class="bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm"
+            >
+            <select 
+              id="protocolFilter" 
+              class="bg-gray-800 border border-gray-700 rounded px-3 py-1 text-sm"
+            >
+              <option value="">All Protocols</option>
+              <option value="TCP">TCP</option>
+              <option value="UDP">UDP</option>
+              <option value="HTTP">HTTP</option>
+              <option value="TLS">TLS</option>
+              <option value="SSH">SSH</option>
+              <option value="IP">IP</option>
+            </select>
+          </div>
+        </div>
+        
+        <div class="overflow-x-auto">
+          <table class="min-w-full">
+            <thead>
+              <tr class="text-left text-xs text-gray-400 border-b border-gray-700">
+                <th class="py-2 px-3">Time</th>
+                <th class="py-2 px-3">Source</th>
+                <th class="py-2 px-3">Destination</th>
+                <th class="py-2 px-3">Protocol</th>
+                <th class="py-2 px-3">Length</th>
+                <th class="py-2 px-3">Info</th>
+              </tr>
+            </thead>
+            <tbody id="packetTable">
+              <tr>
+                <td colspan="6" class="py-4 text-center text-gray-400">
+                  Waiting for packets...
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      
+      <!-- Packet Details -->
+      <div id="packetDetails" class="cyber-dark rounded-lg p-4 shadow-lg hidden">
+        <h2 class="text-lg font-medium mb-2">Packet Details</h2>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div>
+            <h3 class="text-sm text-gray-400 mb-1">Header Information</h3>
+            <div id="packetHeaders" class="bg-gray-800 p-3 rounded mono-text text-sm"></div>
+          </div>
+          <div>
+            <h3 class="text-sm text-gray-400 mb-1">Raw Data (Hex)</h3>
+            <div id="packetData" class="bg-gray-800 p-3 rounded mono-text text-sm overflow-x-auto"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+    
+    <footer class="cyber-dark border-t border-gray-700 p-3 text-center text-xs text-gray-400">
+      <div class="container mx-auto">
+        Packet Sentinel Server v1.0.0 | Network Monitoring Tool
+      </div>
+    </footer>
+  </div>
+
+  <script>
+    // Socket.IO connection
+    const socket = io();
+    
+    // DOM elements
+    const packetTable = document.getElementById('packetTable');
+    const packetCount = document.getElementById('packetCount');
+    const agentCount = document.getElementById('agentCount');
+    const agentList = document.getElementById('agentList');
+    const uptime = document.getElementById('uptime');
+    const filterInput = document.getElementById('filterInput');
+    const protocolFilter = document.getElementById('protocolFilter');
+    const packetDetails = document.getElementById('packetDetails');
+    const packetHeaders = document.getElementById('packetHeaders');
+    const packetData = document.getElementById('packetData');
+    
+    // Track server start time
+    let serverStartTime = new Date();
+    let packetsReceived = 0;
+    let agents = [];
+    
+    // Update the uptime display
+    function updateUptime() {
+      const now = new Date();
+      const diff = now - serverStartTime;
+      
+      const hours = Math.floor(diff / (1000 * 60 * 60));
+      const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+      const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+      
+      uptime.textContent = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+    }
+    
+    // Start the uptime interval
+    setInterval(updateUptime, 1000);
+    
+    // Format timestamp
+    function formatTimestamp(timestamp) {
+      const date = new Date(timestamp);
+      return date.toLocaleTimeString();
+    }
+    
+    // Format bytes to hex
+    function bytesToHex(bytes) {
+      if (!bytes || !bytes.length) return 'No data';
+      
+      let hex = '';
+      let text = '';
+      let lineHex = '';
+      let lineText = '';
+      let count = 0;
+      
+      for (let i = 0; i < bytes.length; i++) {
+        const byte = bytes[i];
+        const hexByte = byte.toString(16).padStart(2, '0');
+        
+        lineHex += hexByte + ' ';
+        lineText += (byte >= 32 && byte <= 126) ? String.fromCharCode(byte) : '.';
+        
+        count++;
+        
+        if (count === 16 || i === bytes.length - 1) {
+          // Pad the last line
+          while (count < 16) {
+            lineHex += '   ';
+            lineText += ' ';
+            count++;
+          }
+          
+          hex += `<div>${lineHex} | ${lineText}</div>`;
+          lineHex = '';
+          lineText = '';
+          count = 0;
+        }
+      }
+      
+      return hex;
+    }
+    
+    // Add a packet to the table
+    function addPacketToTable(packet) {
+      // Apply filters
+      const filterText = filterInput.value.toLowerCase();
+      const protocolFilterValue = protocolFilter.value;
+      
+      if (filterText && 
+          !(packet.source.toLowerCase().includes(filterText) || 
+            packet.destination.toLowerCase().includes(filterText) || 
+            packet.info.toLowerCase().includes(filterText))) {
+        return;
+      }
+      
+      if (protocolFilterValue && packet.protocol !== protocolFilterValue) {
+        return;
+      }
+      
+      // Clean up empty table message if present
+      if (packetTable.querySelector('td[colspan="6"]')) {
+        packetTable.innerHTML = '';
+      }
+      
+      // Create table row
+      const row = document.createElement('tr');
+      row.className = 'border-b border-gray-700 hover:bg-gray-800 cursor-pointer text-sm';
+      row.innerHTML = `
+        <td class="py-2 px-3">${formatTimestamp(packet.timestamp)}</td>
+        <td class="py-2 px-3">${packet.source}</td>
+        <td class="py-2 px-3">${packet.destination}</td>
+        <td class="py-2 px-3"><span class="px-2 py-1 rounded bg-gray-700 text-xs">${packet.protocol}</span></td>
+        <td class="py-2 px-3">${packet.length}</td>
+        <td class="py-2 px-3 truncate max-w-xs">${packet.info}</td>
+      `;
+      
+      // Add click handler to show packet details
+      row.addEventListener('click', () => {
+        showPacketDetails(packet);
+      });
+      
+      // Add to table (at the top)
+      if (packetTable.firstChild) {
+        packetTable.insertBefore(row, packetTable.firstChild);
+      } else {
+        packetTable.appendChild(row);
+      }
+      
+      // Limit table rows
+      if (packetTable.childNodes.length > 100) {
+        packetTable.removeChild(packetTable.lastChild);
+      }
+    }
+    
+    // Show packet details
+    function showPacketDetails(packet) {
+      packetDetails.classList.remove('hidden');
+      
+      // Format headers
+      let headerHTML = `
+        <div><strong>Time:</strong> ${new Date(packet.timestamp).toLocaleString()}</div>
+        <div><strong>Source:</strong> ${packet.source}</div>
+        <div><strong>Destination:</strong> ${packet.destination}</div>
+        <div><strong>Protocol:</strong> ${packet.protocol}</div>
+        <div><strong>Length:</strong> ${packet.length} bytes</div>
+        <div><strong>Info:</strong> ${packet.info}</div>
+      `;
+      
+      packetHeaders.innerHTML = headerHTML;
+      
+      // Format hex data
+      packetData.innerHTML = bytesToHex(packet.data);
+    }
+    
+    // Update the agent list
+    function updateAgentList() {
+      agentCount.textContent = agents.length;
+      
+      if (agents.length === 0) {
+        agentList.innerHTML = '<div class="text-gray-400 text-sm italic">No agents connected</div>';
+        return;
+      }
+      
+      agentList.innerHTML = '';
+      agents.forEach(agent => {
+        const agentEl = document.createElement('div');
+        agentEl.className = 'bg-gray-800 p-2 rounded text-sm';
+        agentEl.innerHTML = `
+          <div class="flex items-center">
+            <span class="status-indicator status-active"></span>
+            <span>${agent.hostname || agent.ip}</span>
+          </div>
+          <div class="text-xs text-gray-400">${agent.packetsReceived} packets</div>
+        `;
+        agentList.appendChild(agentEl);
+      });
+    }
+    
+    // Socket.IO event handlers
+    socket.on('init', (data) => {
+      serverStartTime = new Date(data.stats.serverStartTime);
+      packetsReceived = data.stats.totalPacketsReceived;
+      agents = data.agents;
+      
+      // Update UI
+      packetCount.textContent = packetsReceived;
+      updateAgentList();
+      
+      // Add initial packets
+      if (data.packets.length === 0) {
+        packetTable.innerHTML = `
+          <tr>
+            <td colspan="6" class="py-4 text-center text-gray-400">
+              No packets received yet
+            </td>
+          </tr>
+        `;
+      } else {
+        packetTable.innerHTML = '';
+        data.packets.forEach(packet => {
+          addPacketToTable(packet);
+        });
+      }
+    });
+    
+    socket.on('packet:received', (packet) => {
+      packetsReceived++;
+      packetCount.textContent = packetsReceived;
+      addPacketToTable(packet);
+    });
+    
+    socket.on('agent:connected', (agent) => {
+      agents.push(agent);
+      updateAgentList();
+    });
+    
+    socket.on('agent:disconnected', (data) => {
+      agents = agents.filter(a => a.id !== data.id);
+      updateAgentList();
+    });
+    
+    socket.on('stats:update', (data) => {
+      packetsReceived = data.totalPacketsReceived;
+      agents = data.agents;
+      
+      packetCount.textContent = packetsReceived;
+      updateAgentList();
+    });
+    
+    // Filter event handlers
+    filterInput.addEventListener('input', () => {
+      socket.emit('getPackets', {
+        limit: 100,
+        filter: {
+          text: filterInput.value,
+          protocol: protocolFilter.value
+        }
+      }, (packets) => {
+        packetTable.innerHTML = '';
+        if (packets.length === 0) {
+          packetTable.innerHTML = `
+            <tr>
+              <td colspan="6" class="py-4 text-center text-gray-400">
+                No packets match the filter
+              </td>
+            </tr>
+          `;
+        } else {
+          packets.forEach(packet => {
+            addPacketToTable(packet);
+          });
+        }
+      });
+    });
+    
+    protocolFilter.addEventListener('change', () => {
+      // Trigger the same event as typing in the filter
+      const event = new Event('input');
+      filterInput.dispatchEvent(event);
+    });
+  </script>
+</body>
+</html>

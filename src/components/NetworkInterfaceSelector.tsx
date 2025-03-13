@@ -20,12 +20,14 @@ interface NetworkInterfaceSelectorProps {
   interfaces: NetworkInterface[];
   selectedInterface: string | null;
   onSelectInterface: (id: string) => void;
+  disabled?: boolean;
 }
 
 const NetworkInterfaceSelector: React.FC<NetworkInterfaceSelectorProps> = ({
   interfaces,
   selectedInterface,
-  onSelectInterface
+  onSelectInterface,
+  disabled = false
 }) => {
   return (
     <div className="space-y-2">
@@ -33,6 +35,7 @@ const NetworkInterfaceSelector: React.FC<NetworkInterfaceSelectorProps> = ({
       <Select 
         value={selectedInterface || undefined} 
         onValueChange={onSelectInterface}
+        disabled={disabled}
       >
         <SelectTrigger className="w-full bg-cyber-dark border-cyber-gray">
           <SelectValue placeholder="Select network interface" />

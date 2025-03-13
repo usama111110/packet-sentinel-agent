@@ -1,69 +1,91 @@
-# Welcome to your Lovable project
 
-## Project info
+# Packet Sentinel - Network Capture and Monitoring Tool
 
-**URL**: https://lovable.dev/projects/5fd67758-f25d-4b61-9950-da271093d939
+Packet Sentinel is a cross-platform network monitoring solution consisting of two main components:
 
-## How can I edit this code?
+1. **Packet Sentinel Agent** - A standalone executable that captures network packets on a host machine and forwards them to a central server.
+2. **Packet Sentinel Server** - A central service that receives, processes, and displays network packet data from multiple agents.
 
-There are several ways of editing your application.
+## Agent Component
 
-**Use Lovable**
+The agent is written in Go and uses libraries like libpcap/gopacket for packet capture. It compiles to a standalone executable that can run on:
 
-Simply visit the [Lovable Project](https://lovable.dev/projects/5fd67758-f25d-4b61-9950-da271093d939) and start prompting.
+- Windows
+- macOS
+- Linux
 
-Changes made via Lovable will be committed automatically to this repo.
+### Agent Features
 
-**Use your preferred IDE**
+- Cross-platform support
+- Installation as a system service with auto-start capability
+- Network interface selection
+- Packet filtering support (BPF filters)
+- Reliable server communication with reconnection logic
+- Minimal resource usage
 
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
+### Building the Agent
 
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
+See the [Agent README](./agent/README.md) for detailed build instructions.
 
-Follow these steps:
+## Server Component
 
-```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
+The server component is a Node.js application with a web-based dashboard for monitoring captured packets.
 
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
+### Server Features
 
-# Step 3: Install the necessary dependencies.
-npm i
+- Real-time packet visualization
+- Multiple agent connections
+- Packet filtering and search
+- Protocol identification
+- Detailed packet inspection
+- Traffic statistics and monitoring
 
-# Step 4: Start the development server with auto-reloading and an instant preview.
-npm run dev
+### Running the Server
+
+See the [Server README](./server/README.md) for detailed setup and usage instructions.
+
+## Deployment Architecture
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│ Agent       │     │ Agent       │     │ Agent       │
+│ (Windows)   │     │ (macOS)     │     │ (Linux)     │
+└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
+       │                   │                   │
+       │   Packet Data     │   Packet Data     │   Packet Data
+       │                   │                   │
+       v                   v                   v
+┌─────────────────────────────────────────────────────┐
+│                                                     │
+│              Packet Sentinel Server                 │
+│                                                     │
+└─────────────────────────────────────────────────────┘
+                          ^
+                          │
+                          │   Web Interface
+                          │
+                          v
+┌─────────────────────────────────────────────────────┐
+│                                                     │
+│                  Web Browser                        │
+│                                                     │
+└─────────────────────────────────────────────────────┘
 ```
 
-**Edit a file directly in GitHub**
+## Security Considerations
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+This tool should be used in a controlled environment. Consider the following security aspects:
 
-**Use GitHub Codespaces**
+1. Agent requires administrator/root privileges to capture packets
+2. Communication between agents and server is not encrypted by default
+3. The server dashboard has no authentication by default
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+For production use, consider implementing:
 
-## What technologies are used for this project?
+1. TLS encryption for all communications
+2. Authentication for the server dashboard
+3. Access controls for the agent executable
 
-This project is built with .
+## License
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
-
-## How can I deploy this project?
-
-Simply open [Lovable](https://lovable.dev/projects/5fd67758-f25d-4b61-9950-da271093d939) and click on Share -> Publish.
-
-## I want to use a custom domain - is that possible?
-
-We don't support custom domains (yet). If you want to deploy your project under your own domain then we recommend using Netlify. Visit our docs for more details: [Custom domains](https://docs.lovable.dev/tips-tricks/custom-domain/)
+This project is provided as-is for educational and network troubleshooting purposes.
